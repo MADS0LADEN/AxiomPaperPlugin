@@ -62,6 +62,13 @@ dependencies {
 }
 
 tasks {
+    jar {
+        archiveClassifier.set("dev")
+    }
+    shadowJar {
+        // Fat plugin jar (zstd shaded in) is the artifact servers should use.
+        archiveClassifier.set("")
+    }
     assemble {
         dependsOn(shadowJar)
     }

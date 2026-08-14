@@ -5,7 +5,15 @@ Serverside component for Axiom
 (todo: better readme)
 
 ## Download
-https://modrinth.com/plugin/axiom-paper-plugin/
+
+GitHub Actions builds a plugin JAR on every push. Grab it from:
+
+- **Releases** on this repository — `AxiomPaper.jar` (updated on each commit)
+- The **Artifacts** section on each **Actions** run
+
+Drop `AxiomPaper.jar` in your server `plugins` folder.
+
+Official Modrinth builds: https://modrinth.com/plugin/axiom-paper-plugin/
 
 ## Platform support
 
