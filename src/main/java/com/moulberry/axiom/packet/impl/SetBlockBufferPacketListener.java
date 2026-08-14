@@ -118,7 +118,7 @@ public class SetBlockBufferPacketListener implements PacketHandler {
                 }
 
                 Map<Long, List<BiomeEntry>> byChunk = new HashMap<>();
-                biomeBuffer.forEachEntry((x, y, z, biome) -> byChunk.computeIfAbsent(ChunkPos.asLong(x >> 2, z >> 2),
+                biomeBuffer.forEachEntry((x, y, z, biome) -> byChunk.computeIfAbsent(ChunkPos.pack(x >> 2, z >> 2),
                     key -> new ArrayList<>()).add(new BiomeEntry(x, y, z, biome)));
 
                 org.bukkit.World bukkitWorld = world.getWorld();

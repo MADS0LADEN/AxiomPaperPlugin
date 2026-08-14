@@ -88,10 +88,12 @@ public class SetBlockPacketListener implements PacketHandler {
         Map<BlockPos, BlockState> blocks = friendlyByteBuf.readMap(mapFunction,
                 buf -> buf.readBlockPos(), buf -> buf.readById(registry::byIdOrThrow));
         boolean updateNeighbors = friendlyByteBuf.readBoolean();
-        Set<BlockPos> preventUpdatesAt = Set.of();
+        final Set<BlockPos> preventUpdatesAt;
         if (updateNeighbors) {
             IntFunction<Set<BlockPos>> setFunction = this.plugin.limitCollection(Sets::newHashSetWithExpectedSize);
             preventUpdatesAt = friendlyByteBuf.readCollection(setFunction, buf -> buf.readBlockPos());
+        } else {
+            preventUpdatesAt = Set.of();
         }
 
         if (this.plugin.logLargeBlockBufferChanges() && blocks.size() > 64) {
@@ -122,7 +124,7 @@ public class SetBlockPacketListener implements PacketHandler {
         Map<Long, Map<BlockPos, BlockState>> byChunk = new LinkedHashMap<>();
         for (Map.Entry<BlockPos, BlockState> entry : blocks.entrySet()) {
             BlockPos blockPos = entry.getKey();
-            byChunk.computeIfAbsent(ChunkPos.asLong(blockPos.getX() >> 4, blockPos.getZ() >> 4),
+            byChunk.computeIfAbsent(ChunkPos.pack(blockPos.getX() >> 4, blockPos.getZ() >> 4),
                 key -> new LinkedHashMap<>()).put(blockPos, entry.getValue());
         }
 

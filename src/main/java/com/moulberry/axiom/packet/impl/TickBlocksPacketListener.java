@@ -109,7 +109,7 @@ public class TickBlocksPacketListener implements PacketHandler {
 
         if (positionSet != null) {
             Map<Long, List<int[]>> byChunk = new HashMap<>();
-            positionSet.forEach((x, y, z) -> byChunk.computeIfAbsent(ChunkPos.asLong(x >> 4, z >> 4),
+            positionSet.forEach((x, y, z) -> byChunk.computeIfAbsent(ChunkPos.pack(x >> 4, z >> 4),
                 key -> new ArrayList<>()).add(new int[]{x, y, z}));
 
             remainingChunks.set(byChunk.size());
