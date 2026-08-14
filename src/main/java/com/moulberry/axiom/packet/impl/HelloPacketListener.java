@@ -26,11 +26,11 @@ public class HelloPacketListener implements PacketHandler {
     @Override
     public void onReceive(Player player, FriendlyByteBuf friendlyByteBuf) {
         int apiVersion = friendlyByteBuf.readVarInt();
-        if (apiVersion != AxiomConstants.API_VERSION) {
+        if (apiVersion < AxiomConstants.MIN_API_VERSION || apiVersion > AxiomConstants.API_VERSION) {
             String versions = " (C="+apiVersion+" S="+AxiomConstants.API_VERSION+")";
 
             String message;
-            if (apiVersion < AxiomConstants.API_VERSION) {
+            if (apiVersion < AxiomConstants.MIN_API_VERSION) {
                 message = "Unable to use Axiom, you're on an outdated version! Please update to the latest version of Axiom to use it on this server." + versions;
             } else {
                 message = "Unable to use Axiom, server hasn't updated Axiom yet." + versions;
@@ -51,13 +51,17 @@ public class HelloPacketListener implements PacketHandler {
 
         int dataVersion = friendlyByteBuf.readVarInt();
         int protocolVersion = friendlyByteBuf.readVarInt();
-        long handshakeId = friendlyByteBuf.readLong();
 
-        boolean validHandshake = this.plugin.acceptHandshake(player, handshakeId);
-        if (!validHandshake) {
-            this.plugin.sendGoodbyeReason(player, "Invalid handshake ID");
-            return;
-        } else if (!this.plugin.hasPermission(player, AxiomPermission.USE)) {
+        if (apiVersion >= 10) {
+            long handshakeId = friendlyByteBuf.readLong();
+            boolean validHandshake = this.plugin.acceptHandshake(player, handshakeId);
+            if (!validHandshake) {
+                this.plugin.sendGoodbyeReason(player, "Invalid handshake ID");
+                return;
+            }
+        }
+
+        if (!this.plugin.hasPermission(player, AxiomPermission.USE)) {
             this.plugin.sendGoodbyeReason(player, "Missing axiom.use permission");
             return;
         }
@@ -109,7 +113,7 @@ public class HelloPacketListener implements PacketHandler {
             }
         }
 
-        this.plugin.onAxiomActive(player);
+        this.plugin.onAxiomActive(player, apiVersion);
     }
 
 }

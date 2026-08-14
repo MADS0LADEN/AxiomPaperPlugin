@@ -19,6 +19,8 @@ Official Modrinth builds: https://modrinth.com/plugin/axiom-paper-plugin/
 
 This plugin supports Paper, Folia, and Folia forks such as CanvasMC (`folia-supported: true`). World edits, chunk requests, and entity changes are scheduled on the region that owns the affected location.
 
+The latest public Axiom client for Minecraft 26.2 is **5.5.0** (API 9). This plugin accepts both API 9 and API 10 so that client can join.
+
 ## FAQ
 
 **Axiom works in singleplayer but not when I connect to a multiplayer server running the Axiom Paper Plugin. What gives?**
