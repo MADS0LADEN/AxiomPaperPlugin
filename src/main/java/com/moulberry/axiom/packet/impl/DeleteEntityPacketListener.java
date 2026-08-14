@@ -5,11 +5,11 @@ import com.moulberry.axiom.event.AxiomRemoveEntityEvent;
 import com.moulberry.axiom.integration.Integration;
 import com.moulberry.axiom.packet.PacketHandler;
 import com.moulberry.axiom.restrictions.AxiomPermission;
+import com.moulberry.axiom.util.ServerScheduler;
 import net.minecraft.network.FriendlyByteBuf;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import org.bukkit.Bukkit;
-import org.bukkit.craftbukkit.CraftWorld;
+import org.bukkit.craftbukkit.entity.CraftEntity;
 import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
@@ -35,28 +35,32 @@ public class DeleteEntityPacketListener implements PacketHandler {
 
         List<UUID> delete = friendlyByteBuf.readCollection(this.plugin.limitCollection(ArrayList::new), buf -> buf.readUUID());
 
-        ServerLevel serverLevel = ((CraftWorld)player.getWorld()).getHandle();
-
         for (UUID uuid : delete) {
-            Entity entity = serverLevel.getEntity(uuid);
-            if (entity == null || entity instanceof net.minecraft.world.entity.player.Player || entity.hasPassenger(e -> e instanceof net.minecraft.world.entity.player.Player)) continue;
+            org.bukkit.entity.Entity bukkitEntity = Bukkit.getEntity(uuid);
+            if (bukkitEntity == null) continue;
 
-            if (!this.plugin.canEntityBeManipulated(entity.getType())) {
-                continue;
-            }
+            ServerScheduler.executeNowOrForEntity(this.plugin, bukkitEntity, () -> {
+                Entity entity = ((CraftEntity)bukkitEntity).getHandle();
+                if (entity instanceof net.minecraft.world.entity.player.Player || entity.hasPassenger(e -> e instanceof net.minecraft.world.entity.player.Player)) {
+                    return;
+                }
 
-            if (!Integration.canBreakBlock(player,
-                    player.getWorld().getBlockAt(entity.getBlockX(), entity.getBlockY(), entity.getBlockZ()))) {
-                continue;
-            }
+                if (!this.plugin.canEntityBeManipulated(entity.getType())) {
+                    return;
+                }
 
+                if (!Integration.canBreakBlock(player,
+                        player.getWorld().getBlockAt(entity.getBlockX(), entity.getBlockY(), entity.getBlockZ()))) {
+                    return;
+                }
 
-            AxiomRemoveEntityEvent removeEntityEvent = new AxiomRemoveEntityEvent(player, entity.getBukkitEntity());
-            Bukkit.getPluginManager().callEvent(removeEntityEvent);
+                AxiomRemoveEntityEvent removeEntityEvent = new AxiomRemoveEntityEvent(player, bukkitEntity);
+                Bukkit.getPluginManager().callEvent(removeEntityEvent);
 
-            if (!removeEntityEvent.isCancelled()) {
-                entity.remove(Entity.RemovalReason.DISCARDED);
-            }
+                if (!removeEntityEvent.isCancelled()) {
+                    entity.remove(Entity.RemovalReason.DISCARDED);
+                }
+            });
         }
     }
 

@@ -5,21 +5,25 @@ import com.moulberry.axiom.VersionHelper;
 import com.moulberry.axiom.integration.Integration;
 import com.moulberry.axiom.packet.PacketHandler;
 import com.moulberry.axiom.restrictions.AxiomPermission;
+import com.moulberry.axiom.util.ServerScheduler;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.resources.Identifier;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.ProblemReporter;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.storage.TagValueOutput;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.craftbukkit.entity.CraftEntity;
 import org.bukkit.craftbukkit.entity.CraftPlayer;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class RequestEntityDataPacketListener implements PacketHandler {
 
@@ -36,7 +40,6 @@ public class RequestEntityDataPacketListener implements PacketHandler {
         long id = friendlyByteBuf.readLong();
 
         if (!this.plugin.canUseAxiom(bukkitPlayer, AxiomPermission.ENTITY_REQUESTDATA) || this.plugin.isMismatchedDataVersion(bukkitPlayer.getUniqueId())) {
-            // We always send an 'empty' response in order to make the client happy
             sendResponse(player, id, true, Map.of());
             return;
         }
@@ -47,22 +50,22 @@ public class RequestEntityDataPacketListener implements PacketHandler {
         }
 
         List<UUID> request = friendlyByteBuf.readCollection(this.plugin.limitCollection(ArrayList::new), buf -> buf.readUUID());
-        ServerLevel serverLevel = player.level();
 
         final int maxPacketSize = 0x100000;
-        int remainingBytes = maxPacketSize;
-
-        Map<UUID, CompoundTag> entityData = new HashMap<>();
 
         Set<UUID> visitedEntities = new HashSet<>();
+        List<org.bukkit.entity.Entity> entitiesToQuery = new ArrayList<>();
 
         for (UUID uuid : request) {
             if (!visitedEntities.add(uuid)) {
                 continue;
             }
 
-            Entity entity = serverLevel.getEntity(uuid);
-            if (entity == null || entity instanceof Player) {
+            org.bukkit.entity.Entity bukkitEntity = Bukkit.getEntity(uuid);
+            if (bukkitEntity == null) continue;
+
+            Entity entity = ((CraftEntity)bukkitEntity).getHandle();
+            if (entity instanceof Player) {
                 continue;
             }
 
@@ -75,28 +78,61 @@ public class RequestEntityDataPacketListener implements PacketHandler {
                 continue;
             }
 
-            var valueOutput = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, entity.registryAccess());
-            var entityTag = entity.save(valueOutput) ? valueOutput.buildResult() : null;
-            if (entityTag != null) {
-                int size = entityTag.sizeInBytes();
-                if (size >= maxPacketSize) {
-                    sendResponse(player, id, false, Map.of(uuid, entityTag));
-                    continue;
-                }
-
-                // Send partial packet if we've run out of available bytes
-                if (remainingBytes - size < 0) {
-                    sendResponse(player, id, false, entityData);
-                    entityData.clear();
-                    remainingBytes = maxPacketSize;
-                }
-
-                entityData.put(uuid, entityTag);
-                remainingBytes -= size;
-            }
+            entitiesToQuery.add(bukkitEntity);
         }
 
-        sendResponse(player, id, true, entityData);
+        if (entitiesToQuery.isEmpty()) {
+            sendResponse(player, id, true, Map.of());
+            return;
+        }
+
+        ConcurrentHashMap<UUID, CompoundTag> entityData = new ConcurrentHashMap<>();
+        AtomicInteger remaining = new AtomicInteger(entitiesToQuery.size());
+
+        for (org.bukkit.entity.Entity bukkitEntity : entitiesToQuery) {
+            ServerScheduler.executeNowOrForEntity(this.plugin, bukkitEntity, () -> {
+                Entity entity = ((CraftEntity)bukkitEntity).getHandle();
+                UUID uuid = entity.getUUID();
+
+                var valueOutput = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, entity.registryAccess());
+                var entityTag = entity.save(valueOutput) ? valueOutput.buildResult() : null;
+                if (entityTag != null) {
+                    int size = entityTag.sizeInBytes();
+                    if (size >= maxPacketSize) {
+                        ServerScheduler.executeNowOrForEntity(this.plugin, bukkitPlayer, () ->
+                            sendResponse(player, id, false, Map.of(uuid, entityTag)));
+                    } else {
+                        entityData.put(uuid, entityTag);
+                    }
+                }
+
+                if (remaining.decrementAndGet() == 0) {
+                    ServerScheduler.executeNowOrForEntity(this.plugin, bukkitPlayer, () ->
+                        sendBatchedResponse(player, id, entityData, maxPacketSize));
+                }
+            });
+        }
+    }
+
+    private static void sendBatchedResponse(ServerPlayer player, long id, Map<UUID, CompoundTag> collected, int maxPacketSize) {
+        int remainingBytes = maxPacketSize;
+        Map<UUID, CompoundTag> batch = new HashMap<>();
+
+        for (Map.Entry<UUID, CompoundTag> entry : collected.entrySet()) {
+            CompoundTag entityTag = entry.getValue();
+            int size = entityTag.sizeInBytes();
+
+            if (remainingBytes - size < 0 && !batch.isEmpty()) {
+                sendResponse(player, id, false, batch);
+                batch.clear();
+                remainingBytes = maxPacketSize;
+            }
+
+            batch.put(entry.getKey(), entityTag);
+            remainingBytes -= size;
+        }
+
+        sendResponse(player, id, true, batch);
     }
 
     private static void sendResponse(ServerPlayer player, long id, boolean finished, Map<UUID, CompoundTag> map) {

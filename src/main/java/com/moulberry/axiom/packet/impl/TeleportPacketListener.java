@@ -62,7 +62,7 @@ public class TeleportPacketListener implements PacketHandler {
         if (teleportEvent.isCancelled()) return;
 
         // Do teleport
-        player.teleport(new Location(world, x, y, z, yRot, xRot));
+        player.teleportAsync(new Location(world, x, y, z, yRot, xRot));
     }
 
 }

@@ -5,6 +5,7 @@ import com.moulberry.axiom.event.AxiomTimeChangeEvent;
 import com.moulberry.axiom.integration.plotsquared.PlotSquaredIntegration;
 import com.moulberry.axiom.packet.PacketHandler;
 import com.moulberry.axiom.restrictions.AxiomPermission;
+import com.moulberry.axiom.util.ServerScheduler;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.resources.ResourceKey;
@@ -52,9 +53,12 @@ public class SetTimePacketListener implements PacketHandler {
         Bukkit.getPluginManager().callEvent(timeChangeEvent);
         if (timeChangeEvent.isCancelled()) return;
 
-        // Change time
-        if (time != null) player.getWorld().setTime(time);
-        if (freezeTime != null) level.getGameRules().set(GameRules.ADVANCE_TIME, !freezeTime, null);
+        Integer finalTime = time;
+        Boolean finalFreezeTime = freezeTime;
+        ServerScheduler.executeNowOrGlobal(this.plugin, () -> {
+            if (finalTime != null) player.getWorld().setTime(finalTime);
+            if (finalFreezeTime != null) level.getGameRules().set(GameRules.ADVANCE_TIME, !finalFreezeTime, null);
+        });
     }
 
 }

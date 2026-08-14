@@ -5,6 +5,7 @@ import com.moulberry.axiom.annotations.AnnotationUpdateAction;
 import com.moulberry.axiom.annotations.ServerAnnotations;
 import com.moulberry.axiom.packet.PacketHandler;
 import com.moulberry.axiom.restrictions.AxiomPermission;
+import com.moulberry.axiom.util.ServerScheduler;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
 import org.bukkit.craftbukkit.entity.CraftPlayer;
@@ -43,7 +44,7 @@ public class UpdateAnnotationPacketListener implements PacketHandler {
         }
 
         // Execute
-        serverPlayer.level().getServer().execute(() -> {
+        ServerScheduler.executeNowOrGlobal(this.plugin, () -> {
             try {
                 ServerAnnotations.handleUpdates(serverPlayer.level().getWorld(), actions);
             } catch (Throwable t) {
