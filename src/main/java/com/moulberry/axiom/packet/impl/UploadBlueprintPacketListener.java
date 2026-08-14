@@ -8,6 +8,7 @@ import com.moulberry.axiom.blueprint.ServerBlueprintManager;
 import com.moulberry.axiom.blueprint.ServerBlueprintRegistry;
 import com.moulberry.axiom.packet.PacketHandler;
 import com.moulberry.axiom.restrictions.AxiomPermission;
+import com.moulberry.axiom.util.ServerScheduler;
 import net.minecraft.SharedConstants;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -43,7 +44,7 @@ public class UploadBlueprintPacketListener implements PacketHandler {
         ServerPlayer serverPlayer = ((CraftPlayer)player).getHandle();
 
         if (this.plugin.isMismatchedDataVersion(serverPlayer.getUUID())) {
-            serverPlayer.level().getServer().execute(() -> {
+            ServerScheduler.executeNowOrGlobal(this.plugin, () -> {
                 serverPlayer.sendSystemMessage(Component.literal("Axiom+ViaVersion: This feature isn't supported. Switch your client version to " + VersionHelper.getVersion() + " to use this"));
             });
             friendlyByteBuf.writerIndex(friendlyByteBuf.readerIndex());
@@ -74,7 +75,7 @@ public class UploadBlueprintPacketListener implements PacketHandler {
 
         String pathName = pathStr.substring(0, pathStr.length()-3);
 
-        serverPlayer.level().getServer().execute(() -> {
+        ServerScheduler.executeNowOrGlobal(this.plugin, () -> {
             try {
                 Path path = this.plugin.blueprintFolder.resolve(relative);
 

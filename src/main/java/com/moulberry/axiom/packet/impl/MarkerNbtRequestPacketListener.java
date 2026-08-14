@@ -5,14 +5,15 @@ import com.moulberry.axiom.VersionHelper;
 import com.moulberry.axiom.marker.MarkerData;
 import com.moulberry.axiom.packet.PacketHandler;
 import com.moulberry.axiom.restrictions.AxiomPermission;
+import com.moulberry.axiom.util.ServerScheduler;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.FriendlyByteBuf;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Marker;
-import org.bukkit.craftbukkit.CraftWorld;
+import org.bukkit.Bukkit;
+import org.bukkit.craftbukkit.entity.CraftEntity;
 import org.bukkit.entity.Player;
 
 import java.util.UUID;
@@ -35,12 +36,15 @@ public class MarkerNbtRequestPacketListener implements PacketHandler {
         }
 
         UUID uuid = friendlyByteBuf.readUUID();
-        int reason = friendlyByteBuf.readVarInt();
+        friendlyByteBuf.readVarInt();
 
-        ServerLevel serverLevel = ((CraftWorld)player.getWorld()).getHandle();
+        org.bukkit.entity.Entity bukkitEntity = Bukkit.getEntity(uuid);
+        if (bukkitEntity == null) return;
 
-        Entity entity = serverLevel.getEntity(uuid);
-        if (entity instanceof Marker marker) {
+        ServerScheduler.executeNowOrForEntity(this.plugin, bukkitEntity, () -> {
+            Entity entity = ((CraftEntity)bukkitEntity).getHandle();
+            if (!(entity instanceof Marker marker)) return;
+
             CompoundTag data = MarkerData.getData(marker);
 
             FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.buffer());
@@ -48,8 +52,9 @@ public class MarkerNbtRequestPacketListener implements PacketHandler {
             buf.writeNbt(data);
 
             byte[] bytes = ByteBufUtil.getBytes(buf);
-            VersionHelper.sendCustomPayload(player, "axiom:marker_nbt_response", bytes);
-        }
+            ServerScheduler.executeNowOrForEntity(this.plugin, player, () ->
+                VersionHelper.sendCustomPayload(player, "axiom:marker_nbt_response", bytes));
+        });
     }
 
 }

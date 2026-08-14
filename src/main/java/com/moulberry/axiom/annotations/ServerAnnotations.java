@@ -21,6 +21,7 @@ import org.bukkit.persistence.PersistentDataType;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,7 +30,7 @@ import java.util.WeakHashMap;
 
 public class ServerAnnotations {
 
-    private static final WeakHashMap<World, ServerAnnotations> serverAnnotationCache = new WeakHashMap<>();
+    private static final Map<World, ServerAnnotations> serverAnnotationCache = Collections.synchronizedMap(new WeakHashMap<>());
     private static final NamespacedKey ANNOTATION_DATA_KEY = new NamespacedKey(AxiomPaper.PLUGIN, "annotation_data");
 
     final LinkedHashMap<UUID, AnnotationData> annotations = new LinkedHashMap<>();
@@ -44,7 +45,7 @@ public class ServerAnnotations {
         }
     }
 
-    public static void sendAll(World world, ServerPlayer player) {
+    public static synchronized void sendAll(World world, ServerPlayer player) {
         if (!AxiomPaper.PLUGIN.allowAnnotations) {
             return;
         }
@@ -68,7 +69,7 @@ public class ServerAnnotations {
         sendAnnotationUpdates(actions, List.of(player));
     }
 
-    public static void handleUpdates(World world, List<AnnotationUpdateAction> actions) {
+    public static synchronized void handleUpdates(World world, List<AnnotationUpdateAction> actions) {
         if (!AxiomPaper.PLUGIN.allowAnnotations) {
             return;
         }

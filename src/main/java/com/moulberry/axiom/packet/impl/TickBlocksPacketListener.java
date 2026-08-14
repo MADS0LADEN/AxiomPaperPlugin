@@ -2,19 +2,27 @@ package com.moulberry.axiom.packet.impl;
 
 import com.moulberry.axiom.AxiomPaper;
 import com.moulberry.axiom.buffer.PositionSet;
-import com.moulberry.axiom.buffer.TriIntConsumer;
 import com.moulberry.axiom.packet.PacketHandler;
 import com.moulberry.axiom.restrictions.AxiomPermission;
+import com.moulberry.axiom.util.ServerScheduler;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
 import org.bukkit.craftbukkit.entity.CraftPlayer;
 import org.bukkit.entity.Player;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class TickBlocksPacketListener implements PacketHandler {
 
@@ -86,32 +94,46 @@ public class TickBlocksPacketListener implements PacketHandler {
         }
 
         long start = System.currentTimeMillis();
+        ServerLevel serverLevel = level;
+        org.bukkit.World bukkitWorld = serverLevel.getWorld();
 
-        BlockPos.MutableBlockPos blockPos = new BlockPos.MutableBlockPos();
-        TriIntConsumer consumer = (x, y, z) -> {
-            blockPos.set(x, y, z);
+        AtomicInteger remainingChunks = new AtomicInteger(0);
+        Runnable onComplete = () -> {
+            if (showMessage) {
+                long end = System.currentTimeMillis();
+                long seconds = (end - start + 500) / 1000;
+                Component msg = Component.literal("Done updating & ticking blocks (took " + seconds + "s)");
+                server.getPlayerList().broadcastSystemMessage(msg, false);
+            }
+        };
 
-            BlockState blockState = level.getBlockState(blockPos);
-            if (blockState.isAir()) {
+        if (positionSet != null) {
+            Map<Long, List<int[]>> byChunk = new HashMap<>();
+            positionSet.forEach((x, y, z) -> byChunk.computeIfAbsent(ChunkPos.pack(x >> 4, z >> 4),
+                key -> new ArrayList<>()).add(new int[]{x, y, z}));
+
+            remainingChunks.set(byChunk.size());
+            if (remainingChunks.get() == 0) {
+                onComplete.run();
                 return;
             }
 
-            FluidState fluidState = blockState.getFluidState();
-            if (!fluidState.isEmpty()) {
-                fluidState.tick(level, blockPos, blockState);
-            }
+            for (Map.Entry<Long, List<int[]>> chunkEntry : byChunk.entrySet()) {
+                int chunkX = ChunkPos.getX(chunkEntry.getKey());
+                int chunkZ = ChunkPos.getZ(chunkEntry.getKey());
+                List<int[]> positions = chunkEntry.getValue();
 
-            if (blockState.getBlock() instanceof LiquidBlock) {
-                blockState.tick(level, blockPos, level.getRandom());
-            } else {
-                BlockState blockStateNew = Block.updateFromNeighbourShapes(blockState, level, blockPos);
-                if (blockStateNew != blockState) {
-                    level.setBlock(blockPos, blockStateNew, Block.UPDATE_CLIENTS | Block.UPDATE_SKIP_ALL_SIDEEFFECTS);
-                }
+                ServerScheduler.executeNowOrAtChunk(this.plugin, bukkitWorld, chunkX, chunkZ, () -> {
+                    BlockPos.MutableBlockPos blockPos = new BlockPos.MutableBlockPos();
+                    for (int[] pos : positions) {
+                        tickBlock(serverLevel, blockPos, pos[0], pos[1], pos[2]);
+                    }
+
+                    if (remainingChunks.decrementAndGet() == 0) {
+                        onComplete.run();
+                    }
+                });
             }
-        };
-        if (positionSet != null) {
-            positionSet.forEach(consumer);
         } else {
             int minX = Math.min(aabbMin.getX(), aabbMax.getX());
             int minY = Math.min(aabbMin.getY(), aabbMax.getY());
@@ -120,21 +142,67 @@ public class TickBlocksPacketListener implements PacketHandler {
             int maxY = Math.max(aabbMin.getY(), aabbMax.getY());
             int maxZ = Math.max(aabbMin.getZ(), aabbMax.getZ());
 
-            for (int x = minX; x <= maxX; x++) {
-                for (int y = minY; y <= maxY; y++) {
-                    for (int z = minZ; z <= maxZ; z++) {
-                        consumer.accept(x, y, z);
-                    }
+            int minChunkX = minX >> 4;
+            int maxChunkX = maxX >> 4;
+            int minChunkZ = minZ >> 4;
+            int maxChunkZ = maxZ >> 4;
+
+            int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
+            remainingChunks.set(chunkCount);
+            if (chunkCount == 0) {
+                onComplete.run();
+                return;
+            }
+
+            for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
+                for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
+                    int finalChunkX = chunkX;
+                    int finalChunkZ = chunkZ;
+
+                    ServerScheduler.executeNowOrAtChunk(this.plugin, bukkitWorld, finalChunkX, finalChunkZ, () -> {
+                        BlockPos.MutableBlockPos blockPos = new BlockPos.MutableBlockPos();
+                        int chunkMinX = Math.max(minX, finalChunkX << 4);
+                        int chunkMaxX = Math.min(maxX, (finalChunkX << 4) + 15);
+                        int chunkMinZ = Math.max(minZ, finalChunkZ << 4);
+                        int chunkMaxZ = Math.min(maxZ, (finalChunkZ << 4) + 15);
+
+                        for (int x = chunkMinX; x <= chunkMaxX; x++) {
+                            for (int y = minY; y <= maxY; y++) {
+                                for (int z = chunkMinZ; z <= chunkMaxZ; z++) {
+                                    tickBlock(serverLevel, blockPos, x, y, z);
+                                }
+                            }
+                        }
+
+                        if (remainingChunks.decrementAndGet() == 0) {
+                            onComplete.run();
+                        }
+                    });
                 }
             }
         }
+    }
 
-        long end = System.currentTimeMillis();
+    private static void tickBlock(ServerLevel serverLevel, BlockPos.MutableBlockPos blockPos, int x, int y, int z) {
+        blockPos.set(x, y, z);
 
-        if (showMessage) {
-            long seconds = (end - start + 500)/1000;
-            Component msg = Component.literal("Done updating & ticking blocks (took " + seconds + "s)");
-            server.getPlayerList().broadcastSystemMessage(msg, false);
+        BlockState blockState = serverLevel.getBlockState(blockPos);
+        if (blockState.isAir()) {
+            return;
+        }
+
+        FluidState fluidState = blockState.getFluidState();
+        if (!fluidState.isEmpty()) {
+            fluidState.tick(serverLevel, blockPos, blockState);
+        }
+
+        if (blockState.getBlock() instanceof LiquidBlock) {
+            blockState.tick(serverLevel, blockPos, serverLevel.getRandom());
+        } else {
+            BlockState blockStateNew = Block.updateFromNeighbourShapes(blockState, serverLevel, blockPos);
+            if (blockStateNew != blockState) {
+                serverLevel.setBlock(blockPos, blockStateNew, Block.UPDATE_CLIENTS | Block.UPDATE_SKIP_ALL_SIDEEFFECTS);
+            }
         }
     }
 

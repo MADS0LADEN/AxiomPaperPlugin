@@ -34,11 +34,7 @@ public class ImplServerCustomDisplays {
     private static boolean pendingReregisterAll = false;
     private static boolean hasRegisteredToAPlayer = false;
 
-    public static void register(Plugin plugin, AxiomCustomDisplayBuilder customDisplayBuilder) throws AxiomAlreadyRegisteredException {
-        if (!MinecraftServer.getServer().isSameThread()) {
-            throw new WrongThreadException();
-        }
-
+    public static synchronized void register(Plugin plugin, AxiomCustomDisplayBuilder customDisplayBuilder) throws AxiomAlreadyRegisteredException {
         ImplAxiomCustomDisplay customDisplay = customDisplayBuilder.build();
 
         // Check for duplicate registration
@@ -62,7 +58,7 @@ public class ImplServerCustomDisplays {
         }
     }
 
-    public static void unregisterAll(Plugin plugin) {
+    public static synchronized void unregisterAll(Plugin plugin) {
         List<Identifier> remove = byPlugin.remove(plugin);
         if (remove == null || remove.isEmpty()) {
             return;
@@ -77,7 +73,7 @@ public class ImplServerCustomDisplays {
         }
     }
 
-    public static void tick() {
+    public static synchronized void tick() {
         if (pendingReregisterAll) {
             pendingReregisterAll = false;
 
@@ -113,7 +109,7 @@ public class ImplServerCustomDisplays {
         VersionHelper.sendCustomPayloadToAll(players, "axiom:register_custom_items", ByteBufUtil.getBytes(buf));
     }
 
-    public static void sendAll(ServerPlayer player) {
+    public static synchronized void sendAll(ServerPlayer player) {
         hasRegisteredToAPlayer = true;
 
         RegistryFriendlyByteBuf buf = new RegistryFriendlyByteBuf(Unpooled.buffer(), player.registryAccess());
