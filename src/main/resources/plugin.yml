@@ -6,6 +6,7 @@ authors:
   - Moulberry
 api-version: "$apiVersion"
 softdepend: ["CoreProtect", "ViaVersion", "WorldGuard", "PlotSquared"]
+folia-supported: true
 permissions:
   # Optional admin permissions
   axiomadmin.bypass_region_checks:

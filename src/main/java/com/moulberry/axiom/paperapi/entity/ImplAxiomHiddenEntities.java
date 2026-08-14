@@ -28,7 +28,7 @@ public class ImplAxiomHiddenEntities {
     private static boolean resendIgnoredDisplays = false;
     private static boolean hasSentIgnoredDisplaysToAPlayer = false;
 
-    public static boolean isMarkerHidden(Marker marker) {
+    public static synchronized boolean isMarkerHidden(Marker marker) {
         return hiddenMarkers.contains(marker);
     }
 

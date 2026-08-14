@@ -62,19 +62,7 @@ public class RequestEntityDataPacketListener implements PacketHandler {
             }
 
             org.bukkit.entity.Entity bukkitEntity = Bukkit.getEntity(uuid);
-            if (bukkitEntity == null) continue;
-
-            Entity entity = ((CraftEntity)bukkitEntity).getHandle();
-            if (entity instanceof Player) {
-                continue;
-            }
-
-            if (!this.plugin.canEntityBeManipulated(entity.getType())) {
-                continue;
-            }
-
-            if (!Integration.canPlaceBlock(bukkitPlayer, new Location(bukkitPlayer.getWorld(),
-                    entity.getBlockX(), entity.getBlockY(), entity.getBlockZ()))) {
+            if (bukkitEntity == null || bukkitEntity instanceof org.bukkit.entity.Player) {
                 continue;
             }
 
@@ -91,24 +79,38 @@ public class RequestEntityDataPacketListener implements PacketHandler {
 
         for (org.bukkit.entity.Entity bukkitEntity : entitiesToQuery) {
             ServerScheduler.executeNowOrForEntity(this.plugin, bukkitEntity, () -> {
-                Entity entity = ((CraftEntity)bukkitEntity).getHandle();
-                UUID uuid = entity.getUUID();
-
-                var valueOutput = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, entity.registryAccess());
-                var entityTag = entity.save(valueOutput) ? valueOutput.buildResult() : null;
-                if (entityTag != null) {
-                    int size = entityTag.sizeInBytes();
-                    if (size >= maxPacketSize) {
-                        ServerScheduler.executeNowOrForEntity(this.plugin, bukkitPlayer, () ->
-                            sendResponse(player, id, false, Map.of(uuid, entityTag)));
-                    } else {
-                        entityData.put(uuid, entityTag);
+                try {
+                    Entity entity = ((CraftEntity)bukkitEntity).getHandle();
+                    if (entity instanceof Player) {
+                        return;
                     }
-                }
 
-                if (remaining.decrementAndGet() == 0) {
-                    ServerScheduler.executeNowOrForEntity(this.plugin, bukkitPlayer, () ->
-                        sendBatchedResponse(player, id, entityData, maxPacketSize));
+                    if (!this.plugin.canEntityBeManipulated(entity.getType())) {
+                        return;
+                    }
+
+                    if (!Integration.canPlaceBlock(bukkitPlayer, new Location(bukkitEntity.getWorld(),
+                            entity.getBlockX(), entity.getBlockY(), entity.getBlockZ()))) {
+                        return;
+                    }
+
+                    UUID uuid = entity.getUUID();
+                    var valueOutput = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, entity.registryAccess());
+                    var entityTag = entity.save(valueOutput) ? valueOutput.buildResult() : null;
+                    if (entityTag != null) {
+                        int size = entityTag.sizeInBytes();
+                        if (size >= maxPacketSize) {
+                            ServerScheduler.executeNowOrForEntity(this.plugin, bukkitPlayer, () ->
+                                sendResponse(player, id, false, Map.of(uuid, entityTag)));
+                        } else {
+                            entityData.put(uuid, entityTag);
+                        }
+                    }
+                } finally {
+                    if (remaining.decrementAndGet() == 0) {
+                        ServerScheduler.executeNowOrForEntity(this.plugin, bukkitPlayer, () ->
+                            sendBatchedResponse(player, id, entityData, maxPacketSize));
+                    }
                 }
             });
         }

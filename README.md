@@ -7,6 +7,10 @@ Serverside component for Axiom
 ## Download
 https://modrinth.com/plugin/axiom-paper-plugin/
 
+## Platform support
+
+This plugin supports Paper, Folia, and Folia forks such as CanvasMC (`folia-supported: true`). World edits, chunk requests, and entity changes are scheduled on the region that owns the affected location.
+
 ## FAQ
 
 **Axiom works in singleplayer but not when I connect to a multiplayer server running the Axiom Paper Plugin. What gives?**

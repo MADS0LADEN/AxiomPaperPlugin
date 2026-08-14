@@ -22,14 +22,16 @@ import com.moulberry.axiom.paperapi.block.ImplServerCustomBlocks;
 import com.moulberry.axiom.restrictions.AxiomPermission;
 import com.moulberry.axiom.restrictions.AxiomPermissionSet;
 import com.moulberry.axiom.restrictions.Restrictions;
+import com.moulberry.axiom.util.ServerScheduler;
 import com.moulberry.axiom.world_properties.server.ServerWorldPropertiesRegistry;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.papermc.paper.event.player.PlayerFailMoveEvent;
 import io.papermc.paper.event.world.WorldGameRuleChangeEvent;
+import io.papermc.paper.event.entity.EntityAddToWorldEvent;
+import io.papermc.paper.event.entity.EntityRemoveFromWorldEvent;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
-import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
-import it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -69,6 +71,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.IntFunction;
 
@@ -76,21 +79,22 @@ public class AxiomPaper extends JavaPlugin implements Listener {
 
     public static AxiomPaper PLUGIN; // tsk tsk tsk
 
-    private final Set<UUID> activeAxiomPlayers = new HashSet<>();
-    private final Set<UUID> sentDisableReasonPlayers = new HashSet<>();
-    private final Object2LongOpenHashMap<UUID> pendingHandshakeIds = new Object2LongOpenHashMap<>();
+    private final Set<UUID> activeAxiomPlayers = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> sentDisableReasonPlayers = ConcurrentHashMap.newKeySet();
+    private final Map<UUID, Long> pendingHandshakeIds = new ConcurrentHashMap<>();
 
-    private final Map<UUID, List<byte[]>> tunnelPendingBuffers = new HashMap<>();
-    private final Set<UUID> skipCurrentTunnelPacket = new HashSet<>();
+    private final Map<UUID, List<byte[]>> tunnelPendingBuffers = new ConcurrentHashMap<>();
+    private final Set<UUID> skipCurrentTunnelPacket = ConcurrentHashMap.newKeySet();
 
-    public final Map<UUID, Restrictions> playerRestrictions = new HashMap<>();
-    public final Map<UUID, IdMapper<BlockState>> playerBlockRegistry = new HashMap<>();
-    public final Map<UUID, Integer> playerProtocolVersion = new HashMap<>();
-    private final Map<UUID, AxiomPermissionSet> playerPermissions = new HashMap<>();
-    private final Map<UUID, PlotSquaredIntegration.PlotBounds> lastPlotBoundsForPlayers = new HashMap<>();
-    private final Set<UUID> noPhysicalTriggerPlayers = new HashSet<>();
+    public final Map<UUID, Restrictions> playerRestrictions = new ConcurrentHashMap<>();
+    public final Map<UUID, IdMapper<BlockState>> playerBlockRegistry = new ConcurrentHashMap<>();
+    public final Map<UUID, Integer> playerProtocolVersion = new ConcurrentHashMap<>();
+    private final Map<UUID, AxiomPermissionSet> playerPermissions = new ConcurrentHashMap<>();
+    private final Map<UUID, PlotSquaredIntegration.PlotBounds> lastPlotBoundsForPlayers = new ConcurrentHashMap<>();
+    private final Set<UUID> noPhysicalTriggerPlayers = ConcurrentHashMap.newKeySet();
     private final OperationQueue operationQueue = new OperationQueue();
-    private final Object2IntOpenHashMap<UUID> availableDispatchSends = new Object2IntOpenHashMap<>();
+    private final Map<UUID, Integer> availableDispatchSends = new ConcurrentHashMap<>();
+    private ScheduledTask tickTask = null;
     public Configuration configuration;
 
     public IdMapper<BlockState> allowedBlockRegistry = null;
@@ -231,7 +235,7 @@ public class AxiomPaper extends JavaPlugin implements Listener {
         } catch (IOException ignored) {}
         ServerHeightmaps.load(heightmapsPath);
 
-        Bukkit.getScheduler().scheduleSyncRepeatingTask(this, this::tick, 1, 1);
+        this.tickTask = ServerScheduler.runGlobalAtFixedRate(this, task -> this.tick(), 1, 1);
 
         this.sendMarkers = this.configuration.getBoolean("send-markers");
         this.maxChunkRelightsPerTick = this.configuration.getInt("max-chunk-relights-per-tick");
@@ -280,6 +284,14 @@ public class AxiomPaper extends JavaPlugin implements Listener {
 
         if (CoreProtectIntegration.isEnabled()) {
             this.getLogger().info("CoreProtect integration enabled");
+        }
+    }
+
+    @Override
+    public void onDisable() {
+        if (this.tickTask != null) {
+            this.tickTask.cancel();
+            this.tickTask = null;
         }
     }
 
@@ -358,6 +370,18 @@ public class AxiomPaper extends JavaPlugin implements Listener {
         commandSender.sendMessage(Component.text("Successfully migrated config.yml").color(NamedTextColor.GREEN));
     }
 
+    public boolean isSendMarkers() {
+        return this.sendMarkers;
+    }
+
+    public int getMaxChunkRelightsPerTick() {
+        return this.maxChunkRelightsPerTick;
+    }
+
+    public int getMaxChunkSendsPerTick() {
+        return this.maxChunkSendsPerTick;
+    }
+
     public int getMaxChunkLoadDistance(World world) {
         int maxChunkLoadDistance = this.maxChunkLoadDistance;
 
@@ -396,7 +420,7 @@ public class AxiomPaper extends JavaPlugin implements Listener {
                         VersionHelper.sendCustomPayload(player, "axiom:enable", ByteBufUtil.getBytes(buf));
                     } else {
                         stillActiveAxiomPlayers.add(uuid);
-                        tickPlayer(player, true);
+                        ServerScheduler.executeNowOrForEntity(this, player, () -> tickPlayer(player, true));
                     }
                 } else if (this.hasPermission(player, AxiomPermission.USE)) {
                     if (!this.pendingHandshakeIds.containsKey(uuid)) {
@@ -417,7 +441,7 @@ public class AxiomPaper extends JavaPlugin implements Listener {
 
                     this.sendGoodbyeReason(player, message);
 
-                    pendingHandshakeIds.removeLong(uuid);
+                    pendingHandshakeIds.remove(uuid);
                     sentDisableReasonPlayers.add(uuid);
                 }
             }
@@ -597,10 +621,10 @@ public class AxiomPaper extends JavaPlugin implements Listener {
             return false;
         }
 
-        long expected = this.pendingHandshakeIds.getLong(player.getUniqueId());
+        long expected = this.pendingHandshakeIds.getOrDefault(player.getUniqueId(), 0L);
 
         if (expected == handshakeId) {
-            this.pendingHandshakeIds.removeLong(player.getUniqueId());
+            this.pendingHandshakeIds.remove(player.getUniqueId());
             return true;
         } else {
             return false;
@@ -631,7 +655,7 @@ public class AxiomPaper extends JavaPlugin implements Listener {
         VersionHelper.sendCustomPayload(player, "axiom:enable", enableBytes);
 
         this.activeAxiomPlayers.add(player.getUniqueId());
-        this.pendingHandshakeIds.removeLong(player.getUniqueId());
+        this.pendingHandshakeIds.remove(player.getUniqueId());
 
         this.playerPermissions.remove(player.getUniqueId());
         this.playerRestrictions.remove(player.getUniqueId());
@@ -697,7 +721,7 @@ public class AxiomPaper extends JavaPlugin implements Listener {
             this.availableDispatchSends.put(player.getUniqueId(), allowedDispatchSendsPerSecond*20);
             sendUpdateAvailableDispatchSends(player, allowedDispatchSendsPerSecond, allowedDispatchSendsPerSecond);
         } else {
-            int previousAllowed20 = this.availableDispatchSends.getInt(player.getUniqueId());
+            int previousAllowed20 = this.availableDispatchSends.getOrDefault(player.getUniqueId(), 0);
             int newAllowed20 = Math.min(allowedDispatchSendsPerSecond*20, previousAllowed20 + allowedDispatchSendsPerSecond);
             this.availableDispatchSends.put(player.getUniqueId(), newAllowed20);
 
@@ -908,7 +932,7 @@ public class AxiomPaper extends JavaPlugin implements Listener {
         return this.playerBlockRegistry.getOrDefault(uuid, this.allowedBlockRegistry);
     }
 
-    private final WeakHashMap<World, ServerWorldPropertiesRegistry> worldProperties = new WeakHashMap<>();
+    private final Map<World, ServerWorldPropertiesRegistry> worldProperties = Collections.synchronizedMap(new WeakHashMap<>());
 
     public @Nullable ServerWorldPropertiesRegistry getWorldPropertiesIfPresent(World world) {
         return worldProperties.get(world);
@@ -944,6 +968,20 @@ public class AxiomPaper extends JavaPlugin implements Listener {
     public void onPluginUnload(PluginDisableEvent disableEvent) {
         ImplServerCustomBlocks.unregisterAll(disableEvent.getPlugin());
         ImplServerCustomDisplays.unregisterAll(disableEvent.getPlugin());
+    }
+
+    @EventHandler
+    public void onEntityAddToWorld(EntityAddToWorldEvent event) {
+        if (event.getEntity() instanceof org.bukkit.entity.Marker marker) {
+            WorldExtension.handleMarkerAdded(marker);
+        }
+    }
+
+    @EventHandler
+    public void onEntityRemoveFromWorld(EntityRemoveFromWorldEvent event) {
+        if (event.getEntity() instanceof org.bukkit.entity.Marker marker) {
+            WorldExtension.handleMarkerRemoved(marker);
+        }
     }
 
     @EventHandler

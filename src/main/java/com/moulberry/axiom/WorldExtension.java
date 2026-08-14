@@ -3,6 +3,7 @@ package com.moulberry.axiom;
 import com.moulberry.axiom.annotations.ServerAnnotations;
 import com.moulberry.axiom.marker.MarkerData;
 import com.moulberry.axiom.paperapi.entity.ImplAxiomHiddenEntities;
+import com.moulberry.axiom.util.ServerScheduler;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import it.unimi.dsi.fastutil.longs.*;
@@ -26,10 +27,11 @@ import org.bukkit.craftbukkit.entity.CraftPlayer;
 import org.bukkit.entity.Player;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class WorldExtension {
 
-    private static final Map<ResourceKey<Level>, WorldExtension> extensions = new HashMap<>();
+    private static final Map<ResourceKey<Level>, WorldExtension> extensions = new ConcurrentHashMap<>();
 
     public static WorldExtension get(ServerLevel serverLevel) {
         WorldExtension extension = extensions.computeIfAbsent(serverLevel.dimension(), k -> new WorldExtension());
@@ -54,18 +56,38 @@ public class WorldExtension {
         }
     }
 
-    private ServerLevel level;
+    private volatile ServerLevel level;
 
-    private final LongSet pendingChunksToSend = new LongOpenHashSet();
-    private final LongSet pendingChunksToLight = new LongOpenHashSet();
-    private final Map<UUID, MarkerData> previousMarkerData = new HashMap<>();
+    private final LongSet pendingChunksToSend = LongSets.synchronize(new LongOpenHashSet());
+    private final LongSet pendingChunksToLight = LongSets.synchronize(new LongOpenHashSet());
+    private final Map<UUID, MarkerData> previousMarkerData = new ConcurrentHashMap<>();
 
     public void sendChunk(int cx, int cz) {
-        this.pendingChunksToSend.add(ChunkPos.pack(cx, cz));
+        World world = this.level.getWorld();
+        ServerScheduler.executeNowOrAtChunk(AxiomPaper.PLUGIN, world, cx, cz, () -> this.sendChunkNow(cx, cz));
     }
 
     public void lightChunk(int cx, int cz) {
         this.pendingChunksToLight.add(ChunkPos.pack(cx, cz));
+        World world = this.level.getWorld();
+        ServerScheduler.executeNowOrAtChunk(AxiomPaper.PLUGIN, world, cx, cz, () -> this.relightPending());
+    }
+
+    public static void handleMarkerAdded(org.bukkit.entity.Marker marker) {
+        if (!AxiomPaper.PLUGIN.isSendMarkers()) {
+            return;
+        }
+        ServerLevel level = ((CraftWorld) marker.getWorld()).getHandle();
+        WorldExtension extension = get(level);
+        marker.getScheduler().runAtFixedRate(AxiomPaper.PLUGIN, task -> extension.updateMarker(marker), () -> extension.removeMarker(marker.getUniqueId()), 1, 20);
+    }
+
+    public static void handleMarkerRemoved(org.bukkit.entity.Marker marker) {
+        if (!AxiomPaper.PLUGIN.isSendMarkers()) {
+            return;
+        }
+        ServerLevel level = ((CraftWorld) marker.getWorld()).getHandle();
+        get(level).removeMarker(marker.getUniqueId());
     }
 
     public void onPlayerJoin(Player player) {
@@ -90,108 +112,119 @@ public class WorldExtension {
     }
 
     public void tick(boolean sendMarkers, int maxChunkRelightsPerTick, int maxChunkSendsPerTick) {
-        if (sendMarkers) {
-            this.tickMarkers();
-        }
         this.tickChunkRelight(maxChunkRelightsPerTick, maxChunkSendsPerTick);
     }
 
-    private void tickMarkers() {
-        List<MarkerData> changedData = new ArrayList<>();
-
-        Set<UUID> allMarkers = new HashSet<>();
-
-        for (Entity entity : this.level.getEntities().getAll()) {
-            if (entity instanceof Marker marker) {
-                if (ImplAxiomHiddenEntities.isMarkerHidden((org.bukkit.entity.Marker) marker.getBukkitEntity())) {
-                    continue;
-                }
-
-                MarkerData currentData = MarkerData.createFrom(marker);
-
-                MarkerData previousData = this.previousMarkerData.get(marker.getUUID());
-                if (!Objects.equals(currentData, previousData)) {
-                    this.previousMarkerData.put(marker.getUUID(), currentData);
-                    changedData.add(currentData);
-                }
-
-                allMarkers.add(marker.getUUID());
-            }
+    private void updateMarker(org.bukkit.entity.Marker bukkitMarker) {
+        Entity entity = ((org.bukkit.craftbukkit.entity.CraftEntity) bukkitMarker).getHandle();
+        if (!(entity instanceof Marker marker)) {
+            return;
+        }
+        if (ImplAxiomHiddenEntities.isMarkerHidden(bukkitMarker)) {
+            return;
         }
 
-        Set<UUID> missingUuids = new HashSet<>(this.previousMarkerData.keySet());
-        missingUuids.removeAll(allMarkers);
-        this.previousMarkerData.keySet().removeAll(missingUuids);
+        MarkerData currentData = MarkerData.createFrom(marker);
+        MarkerData previousData = this.previousMarkerData.get(marker.getUUID());
+        if (Objects.equals(currentData, previousData)) {
+            return;
+        }
+        this.previousMarkerData.put(marker.getUUID(), currentData);
+        this.broadcastMarkerUpdate(List.of(currentData), Set.of());
+    }
 
-        if (!changedData.isEmpty() || !missingUuids.isEmpty()) {
-            FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.buffer());
-            buf.writeCollection(changedData, MarkerData::write);
-            buf.writeCollection(missingUuids, (buffer, uuid) -> buffer.writeUUID(uuid));
-            byte[] bytes = ByteBufUtil.getBytes(buf);
-
-            List<ServerPlayer> players = new ArrayList<>();
-
-            for (ServerPlayer player : this.level.players()) {
-                if (AxiomPaper.PLUGIN.canUseAxiom(player.getBukkitEntity())) {
-                    players.add(player);
-                }
-            }
-
-            VersionHelper.sendCustomPayloadToAll(players, "axiom:marker_data", bytes);
+    private void removeMarker(UUID uuid) {
+        if (this.previousMarkerData.remove(uuid) != null) {
+            this.broadcastMarkerUpdate(List.of(), Set.of(uuid));
         }
     }
 
-    private void tickChunkRelight(int maxChunkRelightsPerTick, int maxChunkSendsPerTick) {
+    private void broadcastMarkerUpdate(List<MarkerData> changedData, Set<UUID> missingUuids) {
+        if (changedData.isEmpty() && missingUuids.isEmpty()) {
+            return;
+        }
+
+        FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.buffer());
+        buf.writeCollection(changedData, MarkerData::write);
+        buf.writeCollection(missingUuids, (buffer, uuid) -> buffer.writeUUID(uuid));
+        byte[] bytes = ByteBufUtil.getBytes(buf);
+
+        List<ServerPlayer> players = new ArrayList<>();
+        for (ServerPlayer player : this.level.players()) {
+            if (AxiomPaper.PLUGIN.canUseAxiom(player.getBukkitEntity())) {
+                players.add(player);
+            }
+        }
+
+        VersionHelper.sendCustomPayloadToAll(players, "axiom:marker_data", bytes);
+    }
+
+    private void sendChunkNow(int cx, int cz) {
+        ChunkPos chunkPos = new ChunkPos(cx, cz);
+        LevelChunk chunk = this.level.getChunkIfLoaded(cx, cz);
+        if (chunk == null) {
+            return;
+        }
+
         ChunkMap chunkMap = this.level.getChunkSource().chunkMap;
+        List<ServerPlayer> players = chunkMap.getPlayers(chunkPos, false);
+        if (players.isEmpty()) {
+            return;
+        }
+
+        var packet = new ClientboundLevelChunkWithLightPacket(chunk, this.level.getLightEngine(), null, null, false);
+        for (ServerPlayer player : players) {
+            player.connection.send(packet);
+        }
+    }
+
+    private void relightPending() {
+        this.tickChunkRelight(AxiomPaper.PLUGIN.getMaxChunkRelightsPerTick(), AxiomPaper.PLUGIN.getMaxChunkSendsPerTick());
+    }
+
+    private void tickChunkRelight(int maxChunkRelightsPerTick, int maxChunkSendsPerTick) {
+        World world = this.level.getWorld();
 
         boolean sendAll = maxChunkSendsPerTick <= 0;
 
-        // Send chunks
-        LongIterator longIterator = this.pendingChunksToSend.longIterator();
-        while (longIterator.hasNext()) {
-            ChunkPos chunkPos = ChunkPos.unpack(longIterator.nextLong());
-
-            LevelChunk chunk = this.level.getChunkIfLoaded(chunkPos.x(), chunkPos.z());
-            if (chunk == null) {
+        LongArrayList toSend = new LongArrayList(this.pendingChunksToSend);
+        for (long packed : toSend) {
+            ChunkPos chunkPos = ChunkPos.unpack(packed);
+            if (!ServerScheduler.isOwnedByCurrentRegion(world, chunkPos.x(), chunkPos.z())) {
+                ServerScheduler.executeAtChunk(AxiomPaper.PLUGIN, world, chunkPos.x(), chunkPos.z(), this::relightPending);
                 continue;
             }
-
-            List<ServerPlayer> players = chunkMap.getPlayers(chunkPos, false);
-            if (players.isEmpty()) {
-                continue;
-            }
-
-            var packet = new ClientboundLevelChunkWithLightPacket(chunk, this.level.getLightEngine(), null, null, false);
-            for (ServerPlayer player : players) {
-                player.connection.send(packet);
-            }
-
+            this.pendingChunksToSend.remove(packed);
+            this.sendChunkNow(chunkPos.x(), chunkPos.z());
             if (!sendAll) {
-                longIterator.remove();
-
                 maxChunkSendsPerTick -= 1;
                 if (maxChunkSendsPerTick <= 0) {
                     break;
                 }
             }
         }
-        if (sendAll) {
-            this.pendingChunksToSend.clear();
-        }
 
-        // Relight chunks
         Set<ChunkPos> chunkSet = new HashSet<>();
-        longIterator = this.pendingChunksToLight.longIterator();
+        LongArrayList toLight = new LongArrayList(this.pendingChunksToLight);
         if (maxChunkRelightsPerTick <= 0) {
-            while (longIterator.hasNext()) {
-                chunkSet.add(ChunkPos.unpack(longIterator.nextLong()));
+            for (long packed : toLight) {
+                ChunkPos chunkPos = ChunkPos.unpack(packed);
+                if (!ServerScheduler.isOwnedByCurrentRegion(world, chunkPos.x(), chunkPos.z())) {
+                    ServerScheduler.executeAtChunk(AxiomPaper.PLUGIN, world, chunkPos.x(), chunkPos.z(), this::relightPending);
+                    continue;
+                }
+                this.pendingChunksToLight.remove(packed);
+                chunkSet.add(chunkPos);
             }
-            this.pendingChunksToLight.clear();
         } else {
-            while (longIterator.hasNext()) {
-                chunkSet.add(ChunkPos.unpack(longIterator.nextLong()));
-                longIterator.remove();
-
+            for (long packed : toLight) {
+                ChunkPos chunkPos = ChunkPos.unpack(packed);
+                if (!ServerScheduler.isOwnedByCurrentRegion(world, chunkPos.x(), chunkPos.z())) {
+                    ServerScheduler.executeAtChunk(AxiomPaper.PLUGIN, world, chunkPos.x(), chunkPos.z(), this::relightPending);
+                    continue;
+                }
+                this.pendingChunksToLight.remove(packed);
+                chunkSet.add(chunkPos);
                 maxChunkRelightsPerTick -= 1;
                 if (maxChunkRelightsPerTick <= 0) {
                     break;
@@ -199,7 +232,9 @@ public class WorldExtension {
             }
         }
 
-        this.level.getChunkSource().getLightEngine().starlight$serverRelightChunks(chunkSet, pos -> {}, count -> {});
+        if (!chunkSet.isEmpty()) {
+            this.level.getChunkSource().getLightEngine().starlight$serverRelightChunks(chunkSet, pos -> {}, count -> {});
+        }
     }
 
 }

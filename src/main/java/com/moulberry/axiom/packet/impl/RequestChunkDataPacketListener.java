@@ -7,6 +7,7 @@ import com.moulberry.axiom.buffer.CompressedBlockEntity;
 import com.moulberry.axiom.operations.RequestChunksOperation;
 import com.moulberry.axiom.packet.PacketHandler;
 import com.moulberry.axiom.restrictions.AxiomPermission;
+import com.moulberry.axiom.util.ServerScheduler;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
@@ -125,6 +126,9 @@ public class RequestChunkDataPacketListener implements PacketHandler {
                 boolean canLoad = distance < maxChunkLoadDistance;
 
                 if (!canLoad) {
+                    if (!ServerScheduler.isOwnedByCurrentRegion(level.getWorld(), chunkX, chunkZ)) {
+                        continue;
+                    }
                     LevelChunk chunk = level.getChunkIfLoaded(chunkX, chunkZ);
                     if (chunk == null) continue;
 
@@ -164,6 +168,9 @@ public class RequestChunkDataPacketListener implements PacketHandler {
                 boolean canLoad = distance < maxChunkLoadDistance;
 
                 if (!canLoad) {
+                    if (!ServerScheduler.isOwnedByCurrentRegion(level.getWorld(), sx, sz)) {
+                        continue;
+                    }
                     LevelChunk chunk = level.getChunkIfLoaded(sx, sz);
                     if (chunk == null) continue;
 
