@@ -89,6 +89,7 @@ public class AxiomPaper extends JavaPlugin implements Listener {
     public final Map<UUID, Restrictions> playerRestrictions = new ConcurrentHashMap<>();
     public final Map<UUID, IdMapper<BlockState>> playerBlockRegistry = new ConcurrentHashMap<>();
     public final Map<UUID, Integer> playerProtocolVersion = new ConcurrentHashMap<>();
+    public final Map<UUID, Integer> playerApiVersion = new ConcurrentHashMap<>();
     private final Map<UUID, AxiomPermissionSet> playerPermissions = new ConcurrentHashMap<>();
     private final Map<UUID, PlotSquaredIntegration.PlotBounds> lastPlotBoundsForPlayers = new ConcurrentHashMap<>();
     private final Set<UUID> noPhysicalTriggerPlayers = ConcurrentHashMap.newKeySet();
@@ -176,6 +177,9 @@ public class AxiomPaper extends JavaPlugin implements Listener {
         Messenger msg = Bukkit.getMessenger();
 
         msg.registerOutgoingPluginChannel(this, "axiom:enable");
+        msg.registerOutgoingPluginChannel(this, "axiom:hello");
+        msg.registerOutgoingPluginChannel(this, "axiom:goodbye");
+        msg.registerOutgoingPluginChannel(this, "axiom:redo_handshake");
         msg.registerOutgoingPluginChannel(this, "axiom:response_chunk_data");
         msg.registerOutgoingPluginChannel(this, "axiom:register_world_properties");
         msg.registerOutgoingPluginChannel(this, "axiom:set_world_property");
@@ -432,6 +436,8 @@ public class AxiomPaper extends JavaPlugin implements Listener {
                         FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.buffer());
                         buf.writeLong(id);
                         VersionHelper.sendCustomPayload(player, "axiom:hello", ByteBufUtil.getBytes(buf));
+                        // API 9 clients (Axiom 5.5.0) ignore axiom:hello and re-handshake on this packet.
+                        VersionHelper.sendCustomPayload(player, "axiom:redo_handshake", new byte[]{});
 
                         this.pendingHandshakeIds.put(uuid, id);
                         this.sentDisableReasonPlayers.remove(uuid);
@@ -457,6 +463,7 @@ public class AxiomPaper extends JavaPlugin implements Listener {
             this.playerRestrictions.keySet().retainAll(stillActiveAxiomPlayers);
             this.playerBlockRegistry.keySet().retainAll(stillActiveAxiomPlayers);
             this.playerProtocolVersion.keySet().retainAll(stillActiveAxiomPlayers);
+            this.playerApiVersion.keySet().retainAll(stillActiveAxiomPlayers);
             this.lastPlotBoundsForPlayers.keySet().retainAll(stillActiveAxiomPlayers);
             this.noPhysicalTriggerPlayers.retainAll(stillActiveAxiomPlayers);
         } else {
@@ -631,25 +638,34 @@ public class AxiomPaper extends JavaPlugin implements Listener {
         }
     }
 
-    public void onAxiomActive(Player player) {
+    public void onAxiomActive(Player player, int apiVersion) {
         // Call handshake event
-        int maxBufferSize = this.configuration.getInt("max-block-buffer-packet-size");
+        int maxBufferSize = this.configuration.getInt("max-block-buffer-packet-size", 0x100000);
         AxiomHandshakeEvent handshakeEvent = new AxiomHandshakeEvent(player, maxBufferSize);
         Bukkit.getPluginManager().callEvent(handshakeEvent);
         if (handshakeEvent.isCancelled()) {
             return;
         }
 
-        // Enable packet
+        this.playerApiVersion.put(player.getUniqueId(), apiVersion);
+
+        // Enable packet. API 9 (Axiom 5.5.0) uses the pre-rework layout.
         RegistryFriendlyByteBuf buf = new RegistryFriendlyByteBuf(Unpooled.buffer(), MinecraftServer.getServer().registryAccess());
         buf.writeBoolean(true);
-        buf.writeByte(0); // ServerConfig version
-        buf.writeVarInt(2); // Blueprint version
-        buf.writeInt(this.configuration.getInt("tunnel-split-size", 31000)); // Tunnel split size
-        buf.writeInt(this.configuration.getInt("maximum-tunnel-packet-size", 2097152)); // Maximum tunnel packet size
-        buf.writeVarInt(0); // No blockWithCustomData
-        buf.writeVarInt(0); // No ignoreRotationSet
-        buf.writeCollection(this.supportedServerboundPackets.keySet(), FriendlyByteBuf::writeIdentifier);
+        if (apiVersion >= 10) {
+            buf.writeByte(0); // ServerConfig version
+            buf.writeVarInt(2); // Blueprint version
+            buf.writeInt(this.configuration.getInt("tunnel-split-size", 31000)); // Tunnel split size
+            buf.writeInt(this.configuration.getInt("maximum-tunnel-packet-size", 2097152)); // Maximum tunnel packet size
+            buf.writeVarInt(0); // No blockWithCustomData
+            buf.writeVarInt(0); // No ignoreRotationSet
+            buf.writeCollection(this.supportedServerboundPackets.keySet(), FriendlyByteBuf::writeIdentifier);
+        } else {
+            buf.writeInt(handshakeEvent.getMaxBufferSize()); // Max Buffer Size
+            buf.writeVarInt(2); // Blueprint version
+            buf.writeVarInt(0); // No custom data overrides
+            buf.writeVarInt(0); // No rotation overrides
+        }
 
         byte[] enableBytes = ByteBufUtil.getBytes(buf);
         VersionHelper.sendCustomPayload(player, "axiom:enable", enableBytes);

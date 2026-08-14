@@ -12,6 +12,9 @@ public class AxiomConstants {
         }
     }
 
+    // Latest public Axiom 26.2 client (5.5.0) still speaks API 9.
+    // API 10 is the protocol-rework format; accept both until a matching client is released.
+    public static final int MIN_API_VERSION = 9;
     public static final int API_VERSION = 10;
 
     public static final byte TUNNEL_PACKET_FLAG_ZSTD_COMPRESSED = 1;
