@@ -30,8 +30,10 @@ import io.papermc.paper.event.player.PlayerFailMoveEvent;
 import io.papermc.paper.event.world.WorldGameRuleChangeEvent;
 import com.destroystokyo.paper.event.entity.EntityAddToWorldEvent;
 import com.destroystokyo.paper.event.entity.EntityRemoveFromWorldEvent;
+import io.papermc.paper.network.ChannelInitializeListenerHolder;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
+import net.kyori.adventure.key.Key;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -43,6 +45,9 @@ import net.minecraft.core.IdMapper;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.network.*;
+import net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket;
+import net.minecraft.network.protocol.game.GameProtocols;
+import net.minecraft.network.protocol.game.ServerGamePacketListener;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -197,33 +202,51 @@ public class AxiomPaper extends JavaPlugin implements Listener {
         msg.registerIncomingPluginChannel(this, "axiom:tunnel", (s, player, bytes) -> AxiomPaper.this.handleTunnelBuffer(player, bytes));
         this.supportedServerboundPackets.put(Identifier.fromNamespaceAndPath("axiom", "tunnel"), null);
 
-        registerPacketHandler("hello", new HelloPacketListener(this), msg);
-        registerPacketHandler("set_gamemode", new SetGamemodePacketListener(this), msg);
-        registerPacketHandler("set_fly_speed", new SetFlySpeedPacketListener(this), msg);
-        registerPacketHandler("teleport", new TeleportPacketListener(this), msg);
-        registerPacketHandler("set_world_time", new SetTimePacketListener(this), msg);
-        registerPacketHandler("set_no_physical_trigger", new SetNoPhysicalTriggerPacketListener(this), msg);
-        registerPacketHandler("set_world_property", new SetWorldPropertyListener(this), msg);
+        Map<String, PacketHandler> largePayloadHandlers = new HashMap<>();
 
-        registerPacketHandler("request_chunk_data", new RequestChunkDataPacketListener(this), msg);
-        registerPacketHandler("request_entity_data", new RequestEntityDataPacketListener(this), msg);
+        registerPacketHandler("hello", new HelloPacketListener(this), msg, largePayloadHandlers);
+        registerPacketHandler("set_gamemode", new SetGamemodePacketListener(this), msg, largePayloadHandlers);
+        registerPacketHandler("set_fly_speed", new SetFlySpeedPacketListener(this), msg, largePayloadHandlers);
+        registerPacketHandler("teleport", new TeleportPacketListener(this), msg, largePayloadHandlers);
+        registerPacketHandler("set_world_time", new SetTimePacketListener(this), msg, largePayloadHandlers);
+        registerPacketHandler("set_no_physical_trigger", new SetNoPhysicalTriggerPacketListener(this), msg, largePayloadHandlers);
+        registerPacketHandler("set_world_property", new SetWorldPropertyListener(this), msg, largePayloadHandlers);
 
-        registerPacketHandler("spawn_entity", new SpawnEntityPacketListener(this), msg);
-        registerPacketHandler("manipulate_entity", new ManipulateEntityPacketListener(this), msg);
-        registerPacketHandler("delete_entity", new DeleteEntityPacketListener(this), msg);
-        registerPacketHandler("marker_nbt_request", new MarkerNbtRequestPacketListener(this), msg);
+        registerPacketHandler("request_chunk_data", new RequestChunkDataPacketListener(this), msg, largePayloadHandlers);
+        registerPacketHandler("request_entity_data", new RequestEntityDataPacketListener(this), msg, largePayloadHandlers);
 
-        registerPacketHandler("set_block", new SetBlockPacketListener(this), msg);
-        registerPacketHandler("set_buffer", new SetBlockBufferPacketListener(this), msg);
-        registerPacketHandler("tick_blocks", new TickBlocksPacketListener(this), msg);
+        registerPacketHandler("spawn_entity", new SpawnEntityPacketListener(this), msg, largePayloadHandlers);
+        registerPacketHandler("manipulate_entity", new ManipulateEntityPacketListener(this), msg, largePayloadHandlers);
+        registerPacketHandler("delete_entity", new DeleteEntityPacketListener(this), msg, largePayloadHandlers);
+        registerPacketHandler("marker_nbt_request", new MarkerNbtRequestPacketListener(this), msg, largePayloadHandlers);
+
+        registerPacketHandler("set_block", new SetBlockPacketListener(this), msg, largePayloadHandlers);
+        registerPacketHandler("set_buffer", new SetBlockBufferPacketListener(this), msg, largePayloadHandlers);
+        registerPacketHandler("tick_blocks", new TickBlocksPacketListener(this), msg, largePayloadHandlers);
 
         if (allowServerBlueprints) {
-            registerPacketHandler("upload_blueprint", new UploadBlueprintPacketListener(this), msg);
-            registerPacketHandler("request_blueprint", new BlueprintRequestPacketListener(this), msg);
+            registerPacketHandler("upload_blueprint", new UploadBlueprintPacketListener(this), msg, largePayloadHandlers);
+            registerPacketHandler("request_blueprint", new BlueprintRequestPacketListener(this), msg, largePayloadHandlers);
         }
         if (this.allowAnnotations) {
-            registerPacketHandler("annotation_update", new UpdateAnnotationPacketListener(this), msg);
+            registerPacketHandler("annotation_update", new UpdateAnnotationPacketListener(this), msg, largePayloadHandlers);
         }
+
+        ProtocolInfo<ServerGamePacketListener> protocol = GameProtocols.SERVERBOUND_TEMPLATE.bind(k -> new RegistryFriendlyByteBuf(k,
+                MinecraftServer.getServer().registryAccess()), new GameProtocols.Context() {
+            @Override
+            public boolean hasInfiniteMaterials() {
+                return false;
+            }
+        });
+        RegistryFriendlyByteBuf friendlyByteBuf = new RegistryFriendlyByteBuf(Unpooled.buffer(), MinecraftServer.getServer().registryAccess());
+        protocol.codec().encode(friendlyByteBuf, new ServerboundCustomPayloadPacket(VersionHelper.createCustomPayload(VersionHelper.createIdentifier("dummy"), new byte[0])));
+        int payloadId = friendlyByteBuf.readVarInt();
+
+        ChannelInitializeListenerHolder.addListener(Key.key("axiom:handle_big_payload"), channel -> {
+            Connection connection = (Connection) channel.pipeline().get("packet_handler");
+            AxiomBigPayloadHandler.apply(channel.pipeline(), new AxiomBigPayloadHandler(payloadId, connection, largePayloadHandlers, true));
+        });
 
         if (allowServerBlueprints) {
             this.blueprintFolder = this.getDataFolder().toPath().resolve("blueprints");
@@ -847,9 +870,12 @@ public class AxiomPaper extends JavaPlugin implements Listener {
         return restrictions;
     }
 
-    private void registerPacketHandler(String name, PacketHandler handler, Messenger messenger) {
+    private void registerPacketHandler(String name, PacketHandler handler, Messenger messenger,
+                                       Map<String, PacketHandler> largePayloadHandlers) {
         this.supportedServerboundPackets.put(Identifier.fromNamespaceAndPath("axiom", name), handler);
-        messenger.registerIncomingPluginChannel(this, "axiom:"+name, new WrapperPacketListener(handler));
+        // API 9 clients send large plugin messages. Intercept them before vanilla's 32KB custom_payload limit.
+        largePayloadHandlers.put("axiom:"+name, handler);
+        messenger.registerIncomingPluginChannel(this, "axiom:"+name, new DummyPacketListener());
     }
 
     public <T> IntFunction<T> limitCollection(IntFunction<T> applier) {
