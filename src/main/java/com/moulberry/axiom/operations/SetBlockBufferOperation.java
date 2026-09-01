@@ -263,6 +263,11 @@ public class SetBlockBufferOperation implements PendingOperation {
 
                             chunkLightChanged |= LightEngine.hasDifferentLightProperties(old, blockState);
 
+                            // Remove block entity if block type changes
+                            if (!old.is(block) && old.hasBlockEntity() && !blockState.shouldChangedStateKeepBlockEntity(old)) {
+                                chunk.removeBlockEntity(blockPos);
+                            }
+
                             Optional<Holder<PoiType>> newPoi = containerMaybeHasPoi ? PoiTypes.forState(blockState) : Optional.empty();
                             Optional<Holder<PoiType>> oldPoi = sectionMaybeHasPoi ? PoiTypes.forState(old) : Optional.empty();
                             if (!Objects.equals(oldPoi, newPoi)) {
@@ -276,21 +281,20 @@ public class SetBlockBufferOperation implements PendingOperation {
 
                             BlockEntity blockEntity = chunk.getBlockEntity(blockPos, LevelChunk.EntityCreationType.CHECK);
 
+                            // Remove old block entity if it isn't valid
+                            if (blockEntity != null && !blockEntity.isValidBlockState(blockState)) {
+                                chunk.removeBlockEntity(blockPos);
+                                blockEntity = null;
+                            }
+
                             if (blockEntity == null) {
                                 blockEntity = ((EntityBlock)block).newBlockEntity(blockPos, blockState);
                                 if (blockEntity != null) {
                                     chunk.addAndRegisterBlockEntity(blockEntity);
                                 }
-                            } else if (blockEntity.getType().isValid(blockState)) {
+                            } else {
                                 blockEntity.setBlockState(blockState);
                                 AxiomReflection.updateBlockEntityTicker(chunk, blockEntity);
-                            } else {
-                                chunk.removeBlockEntity(blockPos);
-
-                                blockEntity = ((EntityBlock)block).newBlockEntity(blockPos, blockState);
-                                if (blockEntity != null) {
-                                    chunk.addAndRegisterBlockEntity(blockEntity);
-                                }
                             }
                             if (blockEntity != null && blockEntityChunkMap != null) {
                                 if (blockEntity instanceof GameMasterBlock && !player.canUseGameMasterBlocks()) {
@@ -305,8 +309,6 @@ public class SetBlockBufferOperation implements PendingOperation {
                                     }
                                 }
                             }
-                        } else if (old.hasBlockEntity()) {
-                            chunk.removeBlockEntity(blockPos);
                         }
 
                         if (CoreProtectIntegration.isEnabled() && old != blockState) {
