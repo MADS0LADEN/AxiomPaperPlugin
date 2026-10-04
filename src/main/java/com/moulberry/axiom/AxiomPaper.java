@@ -78,7 +78,6 @@ import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.function.IntFunction;
 
 public class AxiomPaper extends JavaPlugin implements Listener {
 
@@ -236,6 +235,11 @@ public class AxiomPaper extends JavaPlugin implements Listener {
                 MinecraftServer.getServer().registryAccess()), new GameProtocols.Context() {
             @Override
             public boolean hasInfiniteMaterials() {
+                return false;
+            }
+
+            @Override
+            public boolean canUseCommandBlocks() {
                 return false;
             }
         });
@@ -522,8 +526,6 @@ public class AxiomPaper extends JavaPlugin implements Listener {
             return;
         }
 
-        System.out.println("Got tunnel buffer: " + bytes.length);
-
         byte bufferFlags = bytes[0];
 
         boolean isFirst = (bufferFlags & AxiomConstants.TUNNEL_BUFFER_FLAG_FIRST) != 0;
@@ -682,7 +684,7 @@ public class AxiomPaper extends JavaPlugin implements Listener {
             buf.writeInt(this.configuration.getInt("maximum-tunnel-packet-size", 2097152)); // Maximum tunnel packet size
             buf.writeVarInt(0); // No blockWithCustomData
             buf.writeVarInt(0); // No ignoreRotationSet
-            buf.writeCollection(this.supportedServerboundPackets.keySet(), FriendlyByteBuf::writeIdentifier);
+            NetworkHelper.writeCollection(buf, this.supportedServerboundPackets.keySet(), FriendlyByteBuf::writeIdentifier);
         } else {
             buf.writeInt(handshakeEvent.getMaxBufferSize()); // Max Buffer Size
             buf.writeVarInt(2); // Blueprint version
@@ -878,8 +880,8 @@ public class AxiomPaper extends JavaPlugin implements Listener {
         messenger.registerIncomingPluginChannel(this, "axiom:"+name, new DummyPacketListener());
     }
 
-    public <T> IntFunction<T> limitCollection(IntFunction<T> applier) {
-        return FriendlyByteBuf.limitValue(applier, this.packetCollectionReadLimit);
+    public int getPacketCollectionReadLimit() {
+        return this.packetCollectionReadLimit;
     }
 
     public NbtAccounter createNbtAccounter() {
